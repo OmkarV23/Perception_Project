@@ -1,4 +1,0 @@
-classes= 1
-train=/workspace/omkar_projects/PyTorch-YOLOv3/data/custom/train.txt
-valid=/workspace/omkar_projects/PyTorch-YOLOv3/data/custom/valid.txt
-names=/workspace/omkar_projects/PyTorch-YOLOv3/data/custom/classes.names

@@ -1,9 +1,0 @@
-/checkpoint-3500
-/multi_modality/yolov3_2.onnx
-/multi_modality/yolov3.onnx
-/weights/darknet53.conv.74
-/00000da4b2da194ac31f6d1466d2ceb4823bdc263efa81004ee89464.wav
-/logs
-/multi_modality/logs
-/multi_modality/utils/__pycache__
-/multi_modality/__pycache__

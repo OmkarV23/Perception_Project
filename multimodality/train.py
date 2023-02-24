@@ -60,9 +60,8 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu, multiscale_traini
 def run():
     print_environment_info()
     parser = argparse.ArgumentParser(description="Trains the YOLO model.")
-    parser.add_argument("-y", "--model_yolo", type=str, default="./config/yolov3.cfg", help="Path to model definition file (.cfg)")
-    parser.add_argument("-w", "--model_wave", type=str, default="./checkpoint-3500", help="Path to Wave2Vec2 model")
-    parser.add_argument("-d", "--data", type=str, default="./config/custom.data", help="Path to data config file (.data)")
+    parser.add_argument("-m", "--model", type=str, default="/workspace/omkar_projects/PyTorch-YOLOv3/config/yolov3.cfg", help="Path to model definition file (.cfg)")
+    parser.add_argument("-d", "--data", type=str, default="config/coco.data", help="Path to data config file (.data)")
     parser.add_argument("-e", "--epochs", type=int, default=300, help="Number of epochs")
     parser.add_argument("-v", "--verbose", action='store_true', help="Makes the training more verbose")
     parser.add_argument("--n_cpu", type=int, default=8, help="Number of cpu threads to use during batch generation")
@@ -98,7 +97,10 @@ def run():
     # Create model
     # ############
 
-    model = load_model(args.model_yolo, args.model_wave, args.pretrained_weights).to(device)
+    model = load_model(args.model,args.pretrained_weights).to(device)
+    # print(model)
+    # print(model.state_dict())
+    # sys.exit(0)
     out = model(torch.randn(1, 3, 640, 640).to(device))
     sys.exit(0)
 

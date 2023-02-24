@@ -382,7 +382,7 @@ class MODEL(nn.Module):
         modules.add_module(f"conv_hook{hook}_mux", nn.Conv2d(255, vocab_size, kernel_size=(1, 1), stride=(1, 1)))
         return modules
 
-def load_model(config_path,wave2_vec_path,weights_path=None):
+def load_model(config_path,weights_path=None):
     wave2_vec_path = '/workspace/omkar_projects/PyTorch-YOLOv3/checkpoint-3500'
     
     model_yolo = MODEL(load_weights(config_path, weights_path=None),parse_model_config(config_path))

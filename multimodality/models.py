@@ -1,6 +1,6 @@
 from __future__ import division
 from itertools import chain
-import os, sys
+import os, sys, math
 
 import torch
 import torch.nn as nn
@@ -145,6 +145,7 @@ class YOLOLayer(nn.Module):
 
     def forward(self, x, img_size):
         stride = img_size // x.size(2)
+        # stride = torch.div(img_size, img_size(2), rounding_mode='trunc')
         self.stride = stride
         bs, _, ny, nx = x.shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
         x = x.view(bs, self.num_anchors, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
@@ -180,13 +181,8 @@ class Darknet(nn.Module):
 
     def forward(self, x):
         img_size = x.size(2)
-        #####
-        no_conv_layers = 0
-        #####
-
-        layer_outputs, yolo_outputs, maps = [], [], []
+        layer_outputs, yolo_outputs = [], []
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
-            print('TYPEEEE',module_def["type"])
             if module_def["type"] in ["convolutional", "upsample", "maxpool"]:
                 x = module(x)
             elif module_def["type"] == "route":
@@ -198,7 +194,6 @@ class Darknet(nn.Module):
                 layer_i = int(module_def["from"])
                 x = layer_outputs[-1] + layer_outputs[layer_i]
             elif module_def["type"] == "yolo":
-                # maps.append(x)
                 x = module[0](x, img_size)
                 yolo_outputs.append(x)
             layer_outputs.append(x)
@@ -310,8 +305,10 @@ def load_weights(model_path, weights_path=None):
     :return: Returns model
     :rtype: Darknet
     """
-    device = torch.device("cuda" if torch.cuda.is_available()
-                          else "cpu")  # Select device for inference
+    print('---------------------- Loading Weights-------------------------')
+    # device = torch.device("cuda" if torch.cuda.is_available()
+    #                       else "cpu")  # Select device for inference
+    device = 'cpu'
     model = Darknet(model_path).to(device)
 
     model.apply(weights_init_normal)
@@ -330,31 +327,109 @@ def load_weights(model_path, weights_path=None):
 
 ##############################################################################################################
 
-class Cross_Modal_Attention(nn.Module):
-    def __init__(self, yolo, wave2vec) -> None:
-        super(Cross_Modal_Attention).__init__()
-        
+class Conv_Hook(nn.Module):
+    def __init__(self, vocab_size) -> None:
+        super().__init__()
 
+        self.vocab_size = vocab_size
+        self.module = nn.Sequential()
+
+        layer_defs = {'inchannels':[256,self.vocab_size],'outchannels':[self.vocab_size,self.vocab_size],
+                        'kernel_size':[(3, 3),(3,3)], 'stride':[(1,1),(2,2)]}
+
+        for idx,(i,j,k,l) in enumerate(zip(layer_defs['inchannels'],layer_defs['outchannels'],\
+                                layer_defs['kernel_size'], layer_defs["stride"])):
+            self.module.add_module(f"attention_conv_hook_{idx}", nn.Conv2d(i, j, kernel_size=k, stride=l, padding=1))
+            self.module.add_module(f"batch_norm_attention_hook_{idx}", nn.BatchNorm2d(j, momentum=0.1, eps=1e-5))
+            self.module.add_module(f"leaky_attention_hook_{idx}", nn.LeakyReLU(0.1))
+
+        self.cross_modal = Cross_Modal_MultiheadAttention()
+
+    def forward(self, image_embeddings, audio_embeddings):
+        image_embeddings = self.module(image_embeddings).permute(0,2,3,1)
+        
+        ### implement new cross modal attention
+        image_attention = self.cross_modal(image_embeddings.reshape([image_embeddings.shape[0], image_embeddings.shape[1]*image_embeddings.shape[2],
+                                                image_embeddings.shape[3]]), audio_embeddings)
+        return image_attention
+
+class Cross_Modal_MultiheadAttention(nn.Module):
+    def __init__(self, embedding_size=32, num_heads=8):
+        super().__init__()
+
+        self.module_dict = nn.ModuleDict({
+                                    'query': nn.Linear(embedding_size, embedding_size),
+                                    'key': nn.Linear(embedding_size, embedding_size),
+                                    'value': nn.Linear(embedding_size, embedding_size),
+                                    'MultiHeadAttention_block': nn.MultiheadAttention(embedding_size, num_heads, batch_first=True)
+                                    })
+
+    def forward(self, image_embeddings, wave2vec_embeddings):        
+        qkv = []
+        attr_mapping = {'query':wave2vec_embeddings,'key':image_embeddings,'value':image_embeddings}
+        for k,v in attr_mapping.items():
+            qkv.append(self.module_dict[k](v))
+        attention_output, att_weights = self.module_dict['MultiHeadAttention_block'](qkv[0], qkv[1], qkv[2])
+        del att_weights
+        grid_dim = int(math.sqrt(attention_output.shape[1]))
+        return attention_output.reshape([attention_output.shape[0], attention_output.shape[2], grid_dim, grid_dim])
+
+class Attention_merge(nn.Module):
+    def __init__(self, vocab_size=32):
+        super().__init__()
+        self.vocab_size = vocab_size
+        channel_info = [self.vocab_size*(2**i) for i in range(0,4)]
+
+        self.module = nn.Sequential()
+        self.module.add_module('Attention_merge_scale_1',nn.Sequential(nn.ConvTranspose2d(channel_info[0], channel_info[1], 3, stride=2, padding=1, output_padding=1),
+                                nn.BatchNorm2d(channel_info[1], momentum=0.1, eps=1e-5),
+                                nn.LeakyReLU(0.1)))
+        self.module.add_module('Attention_merge_scale_2',nn.Sequential(nn.Conv2d(channel_info[1], channel_info[2], 3, stride=1, padding=1),
+                                nn.BatchNorm2d(channel_info[2], momentum=0.1, eps=1e-5),
+                                nn.LeakyReLU(0.1)))
+        self.module.add_module('Attention_merge_scale_3',nn.Sequential(nn.Conv2d(channel_info[2], channel_info[3], 3, stride=1, padding=1),
+                                nn.BatchNorm2d(channel_info[3], momentum=0.1, eps=1e-5),
+                                nn.LeakyReLU(0.1)))
+
+    def forward(self,x):
+
+        x = self.module(x)
+        return x
 
 class MODEL(nn.Module):
-    def __init__(self,darknet,module_defs):
+    def __init__(self,darknet,wave2vec,module_defs,vocab_size=32):
         super().__init__()
+        self.vocab_size = vocab_size
+
+        self.w2v2 = wave2vec
+        for param in self.w2v2.parameters():
+            param.requires_grad = False
+
+        self.hook_attention = Conv_Hook(self.vocab_size)
+        self.attention_merge = Attention_merge(self.vocab_size)
+
         self.layers = dict(darknet.named_modules())
         self.module_defs = module_defs[1:]
         self.module_list = nn.ModuleList(self.layers[i] for i in self.layers.keys() if len(i.split('.'))==2)
-        yolo_conv = [81, 93, 105]
-        for layer in yolo_conv:
-            self.module_list[layer] = self.hook(self.module_list[layer][0].in_channels, layer, vocab_size=32)
 
-    def forward(self, x):
+    def forward(self, x, audio):
         img_size = x.size(2)
         #####
         no_conv_layers = 0
-        ####
+                                        ######### Audio Part ##########
+        ###################################################################################################
+        with torch.no_grad():
+            audio_features = self.w2v2(audio).logits
+            padding_length = 1600 - audio_features.shape[1]
+            if padding_length > 0:
+                padding = (0,padding_length)
+                audio_logits = F.pad(audio_features, (0, 0, padding[0], padding[1]), "constant", 0)
+        ###################################################################################################
+
         layer_outputs, yolo_outputs, maps = [], [], []
         for i, (module_def, module) in enumerate(zip(self.module_defs, self.module_list)):
             if module_def["type"] in ["convolutional", "upsample", "maxpool"]:
-                x = module(x)
+                x = module(x)                    
             elif module_def["type"] == "route":
                 combined_outputs = torch.cat([layer_outputs[int(layer_i)] for layer_i in module_def["layers"].split(",")], 1)
                 group_size = combined_outputs.shape[1] // int(module_def.get("groups", 1))
@@ -363,35 +438,23 @@ class MODEL(nn.Module):
             elif module_def["type"] == "shortcut":
                 layer_i = int(module_def["from"])
                 x = layer_outputs[-1] + layer_outputs[layer_i]
+                if i==36:
+                    x = self.hook_attention(x, audio_logits)
+                    x = self.attention_merge(x)
             elif module_def["type"] == "yolo":
-                maps.append(x)
                 x = module[0](x, img_size)
                 yolo_outputs.append(x)
             layer_outputs.append(x)
-        # sys.exit(0)
-        return yolo_outputs if self.training else torch.cat(yolo_outputs, 1)#, \
-     
-    # def model(self):
-    #     return self.module_list
+        # for idx,i in enumerate(layer_outputs):
+        #     print(idx,i.shape)
+        return yolo_outputs if self.training else torch.cat(yolo_outputs, 1)
 
-    def hook(self,inchannel, hook, vocab_size):
-        ##### imagine (batch,'something', vocab_size) shape 
-        ##### incoming shapes (batch,255,20,20), (batch,255,40,40), (batch,255,80,80)
-        modules = nn.Sequential()
-        modules.add_module(f"conv_hook{hook}_op", nn.Conv2d(inchannel, 255, kernel_size=(1, 1), stride=(1, 1)))
-        modules.add_module(f"conv_hook{hook}_mux", nn.Conv2d(255, vocab_size, kernel_size=(1, 1), stride=(1, 1)))
-        return modules
+def load_model(config_path,wave2_vec_path,weights_path=None):
+    model_wav2vec = Wav2Vec2ForCTC.from_pretrained(wave2_vec_path)
+    model = MODEL(load_weights(config_path,weights_path=None),model_wav2vec,parse_model_config(config_path))
 
-def load_model(config_path,weights_path=None):
-    wave2_vec_path = '/workspace/omkar_projects/PyTorch-YOLOv3/checkpoint-3500'
-    
-    model_yolo = MODEL(load_weights(config_path, weights_path=None),parse_model_config(config_path))
+    # model = load_weights(config_path,weights_path=weights_path).to('cpu')
 
-    # model_wav2vec = Wav2Vec2ForCTC.from_pretrained(wave2_vec_path).to('cuda')
-    # c = Cross_Modal_Attention(model_yolo, model_wav2vec)
-    # model = load_weights(config_path, weights_path=None)
-    # print(model_yolo)
-
-    return model_yolo
+    return model
 
 ##############################################################################################################

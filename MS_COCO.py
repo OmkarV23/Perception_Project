@@ -1,28 +1,31 @@
-import fiftyone as fo
-import fiftyone.zoo as foz
+"""
+Requirements:
+    1) CocoDataset==0.1.2
+    2) wget http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+    3) unzip ./annotations_trainval2017.zip
+"""
 
-# Define the desired object classes
-classes = ["bottle", "cup", "sports ball"]
+from coco_dataset import coco_dataset_download as cocod
 
-# Define a filter to only include samples that contain at least one object
-# with a label in the desired classes
-filter = {"$or": [{"ground_truth.detections.label": c} for c in classes]}
 
-# Define the `info` parameter to include the `bounding_box` field
-info = {"bounding_box": True}
+def download_COCO_class_instances(
+    classes: list[str],
+    count: int,
+    annotations_path: str,
+):
+    """
+    Download count instances of images containing an object from the classes.
 
-# Load the COCO 2017 training split and apply the filter and info parameters
-dataset = foz.load_zoo_dataset(
-    "coco-2017",
-    split="train",
-    label_types=["detections"],
-    filter=filter,
-    info=info
-)
+    We reduce the count by one because the count is incremented by one by this package.
+    """
+    for i in classes:
+        # call the download function
+        cocod.coco_dataset_download(i, count - 1, annotations_path)
 
-# Export the dataset to COCO format
-dataset.export(
-    export_dir="./MS_COCO",
-    dataset_type=fo.types.COCODetectionDataset,
-    label_field="ground_truth",
-)
+
+if __name__ == "__main__":
+    download_COCO_class_instances(
+        ["bottle", "cup", "sports ball"],
+        1,
+        "./annotations/instances_train2017.json",
+    )

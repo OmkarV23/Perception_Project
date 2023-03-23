@@ -5,18 +5,20 @@ from __future__ import division
 import os, sys
 import argparse
 import tqdm
-
+import librosa
 import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch.onnx
+from onnxruntime.tools import pytorch_export_contrib_ops
+from transformers import Wav2Vec2Processor, Wav2Vec2Tokenizer
 
 from models import load_model
 from utils.logger import Logger
 from utils.utils import to_cpu, load_classes, print_environment_info, provide_determinism, worker_seed_set
 from utils.datasets import ListDataset
 from utils.augmentations import AUGMENTATION_TRANSFORMS
-from utils.parse_config import parse_data_config
+from utils.parse_config import parse_data_config, parse_model_config
 from utils.loss import compute_loss
 from test import _evaluate, _create_validation_data_loader
 #from utils.transforms import DEFAULT_TRANSFORMS
@@ -91,37 +93,79 @@ def run():
     train_path = data_config["train"]
     valid_path = data_config["valid"]
     class_names = load_classes(data_config["names"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = 'cpu'
 
     # ############
     # Create model
     # ############
 
-    model = load_model(args.model,args.pretrained_weights).to(device)
+    
+    wave2_vec_path = '/workspace/omkar_projects/PyTorch-YOLOv3/new_ckpt_w2v'
+    
+    model = load_model(args.model,wave2_vec_path,args.pretrained_weights).to(device)
+    
+    audio, sr = librosa.load('/workspace/omkar_projects/PyTorch-YOLOv3/00000da4b2da194ac31f6d1466d2ceb4823bdc263efa81004ee89464.wav', sr=16000)
+    processor = Wav2Vec2Processor.from_pretrained(wave2_vec_path)
+    # tokenizer = Wav2Vec2Tokenizer.from_pretrained(wave2_vec_path)
+    input_audio = processor(audio, return_tensors="pt", padding="longest").input_values
     # print(model)
-    # print(model.state_dict())
+    # out = model(torch.randn(1, 3, 640, 640).to(device), input_audio.to(device))
+    # for i in out:
+    #     print(i)
+    # import sys
     # sys.exit(0)
-    out = model(torch.randn(1, 3, 640, 640).to(device))
-    sys.exit(0)
 
-    model = model.to(device)
-    output_onnx = 'yolov3_2.onnx'
-    print("==> Exporting model to ONNX format at '{}'".format(output_onnx))
-    input_names = ["input0"]
-    output_names = ["output0", 'maps0', 'maps1', 'maps2']
-    inputs = torch.randn(1, 3, 640, 640).to(device)
+    # model = model.to(device)
+    # sys.exit(0)
 
-    torch_out = torch.onnx._export(model, inputs, output_onnx, export_params=True, verbose=False,
-                                input_names=input_names, output_names=output_names)
+    # # for name,_ in model.named_parameters():
+    # #     print(name)
+    # # import sys
+    # # sys.exit(0)
 
-    import sys
-    sys.exit(0)
+    # output_onnx = 'Stacked_encoder_multimodal.onnx'
+    # print("==> Exporting model to ONNX format at '{}'".format(output_onnx))
+    # input_names = ["image_input", "audio_input"]
+    # output_names = ["Bounding_boxes"]
+    # input_1 = torch.randn(1, 3, 640, 640).to(device)
+    
+    # # dynamic_axes = {"image_input":[0], "audio_input":[0],
+    # #                 "Bounding_boxes": [0],"Image_embedding":[0],}
+
+    # # pytorch_export_contrib_ops.register()
+    # torch.onnx.export(model, (input_1, input_audio), output_onnx, export_params=True, verbose=False,
+    #                             input_names=input_names, output_names=output_names, do_constant_folding=True, 
+    #                             opset_version=13)#, dynamic_axes=dynamic_axes)
+
+    # sys.exit(0)
 
     # Print model
-    if args.verbose:
-        summary(model, input_size=(3, model.hyperparams['height'], model.hyperparams['height']))
 
-    mini_batch_size = model.hyperparams['batch'] // model.hyperparams['subdivisions']
+    hyperparams = parse_model_config(args.model).pop(0)
+    hyperparams.update({
+        'batch': int(hyperparams['batch']),
+        'subdivisions': int(hyperparams['subdivisions']),
+        'width': int(hyperparams['width']),
+        'height': int(hyperparams['height']),
+        'channels': int(hyperparams['channels']),
+        'optimizer': hyperparams.get('optimizer'),
+        'momentum': float(hyperparams['momentum']),
+        'decay': float(hyperparams['decay']),
+        'learning_rate': float(hyperparams['learning_rate']),
+        'burn_in': int(hyperparams['burn_in']),
+        'max_batches': int(hyperparams['max_batches']),
+        'policy': hyperparams['policy'],
+        'lr_steps': list(zip(map(int,   hyperparams["steps"].split(",")),
+                             map(float, hyperparams["scales"].split(","))))
+    })
+
+
+    if args.verbose:
+        summary(model, input_size=[(3, hyperparams['height'], hyperparams['height']), (109712)], device='cpu')
+    sys.exit(0)
+
+    mini_batch_size = hyperparams['batch'] // hyperparams['subdivisions']
 
     # #################
     # Create Dataloader
@@ -131,7 +175,7 @@ def run():
     dataloader = _create_data_loader(
         train_path,
         mini_batch_size,
-        model.hyperparams['height'],
+        hyperparams['height'],
         args.n_cpu,
         args.multiscale_training)
 
@@ -139,7 +183,7 @@ def run():
     validation_dataloader = _create_validation_data_loader(
         valid_path,
         mini_batch_size,
-        model.hyperparams['height'],
+        hyperparams['height'],
         args.n_cpu)
 
     # ################
@@ -148,18 +192,18 @@ def run():
 
     params = [p for p in model.parameters() if p.requires_grad]
 
-    if (model.hyperparams['optimizer'] in [None, "adam"]):
+    if (hyperparams['optimizer'] in [None, "adam"]):
         optimizer = optim.Adam(
             params,
-            lr=model.hyperparams['learning_rate'],
-            weight_decay=model.hyperparams['decay'],
+            lr=hyperparams['learning_rate'],
+            weight_decay=hyperparams['decay'],
         )
-    elif (model.hyperparams['optimizer'] == "sgd"):
+    elif (hyperparams['optimizer'] == "sgd"):
         optimizer = optim.SGD(
             params,
-            lr=model.hyperparams['learning_rate'],
-            weight_decay=model.hyperparams['decay'],
-            momentum=model.hyperparams['momentum'])
+            lr=hyperparams['learning_rate'],
+            weight_decay=hyperparams['decay'],
+            momentum=hyperparams['momentum'])
     else:
         print("Unknown optimizer. Please choose between (adam, sgd).")
 
@@ -188,16 +232,16 @@ def run():
             # Run optimizer
             ###############
 
-            if batches_done % model.hyperparams['subdivisions'] == 0:
+            if batches_done % hyperparams['subdivisions'] == 0:
                 # Adapt learning rate
                 # Get learning rate defined in cfg
-                lr = model.hyperparams['learning_rate']
-                if batches_done < model.hyperparams['burn_in']:
+                lr = hyperparams['learning_rate']
+                if batches_done < hyperparams['burn_in']:
                     # Burn in
-                    lr *= (batches_done / model.hyperparams['burn_in'])
+                    lr *= (batches_done / hyperparams['burn_in'])
                 else:
                     # Set and parse the learning rate to the steps defined in the cfg
-                    for threshold, value in model.hyperparams['lr_steps']:
+                    for threshold, value in hyperparams['lr_steps']:
                         if batches_done > threshold:
                             lr *= value
                 # Log the learning rate
@@ -256,7 +300,7 @@ def run():
                 model,
                 validation_dataloader,
                 class_names,
-                img_size=model.hyperparams['height'],
+                img_size=hyperparams['height'],
                 iou_thres=args.iou_thres,
                 conf_thres=args.conf_thres,
                 nms_thres=args.nms_thres,

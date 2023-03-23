@@ -324,11 +324,10 @@ def load_weights(model_path, weights_path=None):
 
     return model
 
-
 ##############################################################################################################
 
-class Conv_Hook(nn.Module):
-    def __init__(self, vocab_size) -> None:
+class Hook(nn.Module):
+    def __init__(self, vocab_size, encoder_layers) -> None:
         super().__init__()
 
         self.vocab_size = vocab_size
@@ -343,7 +342,7 @@ class Conv_Hook(nn.Module):
             self.module.add_module(f"batch_norm_attention_hook_{idx}", nn.BatchNorm2d(j, momentum=0.1, eps=1e-5))
             self.module.add_module(f"leaky_attention_hook_{idx}", nn.LeakyReLU(0.1))
 
-        self.cross_modal = Cross_Modal_MultiheadAttention()
+        self.cross_modal = Transformer_encoder(stacked_layers=encoder_layers, embedding_size=self.vocab_size)
 
     def forward(self, image_embeddings, audio_embeddings):
         image_embeddings = self.module(image_embeddings).permute(0,2,3,1)
@@ -353,42 +352,72 @@ class Conv_Hook(nn.Module):
                                                 image_embeddings.shape[3]]), audio_embeddings)
         return image_attention
 
-class Cross_Modal_MultiheadAttention(nn.Module):
-    def __init__(self, embedding_size=32, num_heads=8):
-        super().__init__()
 
+class Normalized_Residual(nn.Module):
+    def __init__(self, vocab_size, dropout=0.1):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.layer_norm = nn.LayerNorm(self.vocab_size)
+        self.dropout = nn.Dropout(dropout)
+    def forward(self,jump,ff):
+        return self.layer_norm(jump + self.dropout(ff))
+
+# Position-Wise-Feed-Forward Network
+class PWFFN(nn.Module):
+    def __init__(self, vocab_size, dropout=0.1):
+        super().__init__()
+        self.fc_1 = nn.Linear(vocab_size, vocab_size*2)
+        self.fc_2 = nn.Linear(vocab_size*2, vocab_size)      
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, x):       
+        x = self.dropout(torch.relu(self.fc_1(x)))
+        x = self.fc_2(x)       
+        return x
+
+class Transformer_encoder(nn.Module):
+    def __init__(self, stacked_layers, embedding_size=32, num_heads=3, dropout=0.1):
+        super().__init__()
+        self.stacked_layers = stacked_layers
         self.module_dict = nn.ModuleDict({
                                     'query': nn.Linear(embedding_size, embedding_size),
                                     'key': nn.Linear(embedding_size, embedding_size),
                                     'value': nn.Linear(embedding_size, embedding_size),
-                                    'MultiHeadAttention_block': nn.MultiheadAttention(embedding_size, num_heads, batch_first=True)
-                                    })
+                                    'MultiHeadAttention_block': nn.MultiheadAttention(embedding_size, num_heads, batch_first=True),
+                                    'Add_Norm_attention': Normalized_Residual(embedding_size, dropout),
+                                    'Position-Wise-Feed-Forward':PWFFN(embedding_size, dropout),
+                                    'Add_Norm_FFN': Normalized_Residual(embedding_size, dropout)})
 
     def forward(self, image_embeddings, wave2vec_embeddings):        
-        qkv = []
         attr_mapping = {'query':wave2vec_embeddings,'key':image_embeddings,'value':image_embeddings}
-        for k,v in attr_mapping.items():
-            qkv.append(self.module_dict[k](v))
-        attention_output, att_weights = self.module_dict['MultiHeadAttention_block'](qkv[0], qkv[1], qkv[2])
-        del att_weights
-        grid_dim = int(math.sqrt(attention_output.shape[1]))
-        return attention_output.reshape([attention_output.shape[0], attention_output.shape[2], grid_dim, grid_dim])
+        for i in range(self.stacked_layers):
+            qkv = []
+            for k,v in attr_mapping.items():
+                qkv.append(self.module_dict[k](v))
+            attention_residual_norm = self.module_dict['Add_Norm_attention'](qkv[0], 
+                                                        self.module_dict['MultiHeadAttention_block'](*qkv)[0])
+            x = self.module_dict['Add_Norm_FFN'](attention_residual_norm,
+                                                self.module_dict['Position-Wise-Feed-Forward'](attention_residual_norm))
+            for attributs in attr_mapping.keys():
+                attr_mapping[attributs] = x
+        grid_dim = int(math.sqrt(x.shape[1]))
+        return x.reshape([x.shape[0], x.shape[2], grid_dim, grid_dim])
 
 class Attention_merge(nn.Module):
     def __init__(self, vocab_size=32):
         super().__init__()
         self.vocab_size = vocab_size
-        channel_info = [self.vocab_size*(2**i) for i in range(0,4)]
+        channel_info = [32*(2**i) for i in range(1,4)]
 
         self.module = nn.Sequential()
-        self.module.add_module('Attention_merge_scale_1',nn.Sequential(nn.ConvTranspose2d(channel_info[0], channel_info[1], 3, stride=2, padding=1, output_padding=1),
+        self.module.add_module('Attention_merge_scale_1',nn.Sequential(nn.ConvTranspose2d(self.vocab_size, channel_info[0], 3, stride=2, padding=1, output_padding=1),
+                                nn.BatchNorm2d(channel_info[0], momentum=0.1, eps=1e-5),
+                                nn.LeakyReLU(0.1)))
+        self.module.add_module('Attention_merge_scale_2',nn.Sequential(nn.Conv2d(channel_info[0], channel_info[1], 3, stride=1, padding=1),
                                 nn.BatchNorm2d(channel_info[1], momentum=0.1, eps=1e-5),
                                 nn.LeakyReLU(0.1)))
-        self.module.add_module('Attention_merge_scale_2',nn.Sequential(nn.Conv2d(channel_info[1], channel_info[2], 3, stride=1, padding=1),
+        self.module.add_module('Attention_merge_scale_3',nn.Sequential(nn.Conv2d(channel_info[1], channel_info[2], 3, stride=1, padding=1),
                                 nn.BatchNorm2d(channel_info[2], momentum=0.1, eps=1e-5),
-                                nn.LeakyReLU(0.1)))
-        self.module.add_module('Attention_merge_scale_3',nn.Sequential(nn.Conv2d(channel_info[2], channel_info[3], 3, stride=1, padding=1),
-                                nn.BatchNorm2d(channel_info[3], momentum=0.1, eps=1e-5),
                                 nn.LeakyReLU(0.1)))
 
     def forward(self,x):
@@ -405,7 +434,7 @@ class MODEL(nn.Module):
         for param in self.w2v2.parameters():
             param.requires_grad = False
 
-        self.hook_attention = Conv_Hook(self.vocab_size)
+        self.hook_attention = Hook(self.vocab_size,3)
         self.attention_merge = Attention_merge(self.vocab_size)
 
         self.layers = dict(darknet.named_modules())
@@ -451,7 +480,7 @@ class MODEL(nn.Module):
 
 def load_model(config_path,wave2_vec_path,weights_path=None):
     model_wav2vec = Wav2Vec2ForCTC.from_pretrained(wave2_vec_path)
-    model = MODEL(load_weights(config_path,weights_path=None),model_wav2vec,parse_model_config(config_path))
+    model = MODEL(load_weights(config_path,weights_path=None),model_wav2vec,parse_model_config(config_path),33)
 
     # model = load_weights(config_path,weights_path=weights_path).to('cpu')
 

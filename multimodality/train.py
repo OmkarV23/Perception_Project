@@ -9,9 +9,7 @@ import librosa
 import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
-import torch.onnx
-from onnxruntime.tools import pytorch_export_contrib_ops
-from transformers import Wav2Vec2Processor, Wav2Vec2Tokenizer
+from transformers import Wav2Vec2Processor
 
 from models import load_model
 from utils.logger import Logger
@@ -20,14 +18,17 @@ from utils.datasets import ListDataset
 from utils.augmentations import AUGMENTATION_TRANSFORMS
 from utils.parse_config import parse_data_config, parse_model_config
 from utils.loss import compute_loss
-from test import _evaluate, _create_validation_data_loader
+from validation import _evaluate, _create_validation_data_loader
 #from utils.transforms import DEFAULT_TRANSFORMS
 from terminaltables import AsciiTable
 
 from torchsummary import summary
 
 
-def _create_data_loader(img_path, batch_size, img_size, n_cpu, multiscale_training=False):
+def _create_data_loader(data, image_dir,
+                        annotation_dir, audio_dir, processor, 
+                        batch_size, img_size, n_cpu, 
+                        multiscale_training=False):
     """Creates a DataLoader for training.
 
     :param img_path: Path to file containing all paths to training images.
@@ -44,7 +45,8 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu, multiscale_traini
     :rtype: DataLoader
     """
     dataset = ListDataset(
-        img_path,
+        data, image_dir,
+        annotation_dir, audio_dir, processor,
         img_size=img_size,
         multiscale=multiscale_training,
         transform=AUGMENTATION_TRANSFORMS)
@@ -52,7 +54,7 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu, multiscale_traini
         dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=n_cpu,
+        # num_workers=n_cpu,
         pin_memory=True,
         collate_fn=dataset.collate_fn,
         worker_init_fn=worker_seed_set)
@@ -66,8 +68,9 @@ def run():
     parser.add_argument("-d", "--data", type=str, default="config/coco.data", help="Path to data config file (.data)")
     parser.add_argument("-e", "--epochs", type=int, default=300, help="Number of epochs")
     parser.add_argument("-v", "--verbose", action='store_true', help="Makes the training more verbose")
-    parser.add_argument("--n_cpu", type=int, default=8, help="Number of cpu threads to use during batch generation")
-    parser.add_argument("--pretrained_weights", type=str, help="Path to checkpoint file (.weights or .pth). Starts training from checkpoint model")
+    parser.add_argument("--n_cpu", type=int, default=1, help="Number of cpu threads to use during batch generation")
+    parser.add_argument("--image", type=str, help="Path to checkpoint file (.weights or .pth). Starts training from checkpoint model")
+    parser.add_argument("--audio", type=str, help="Fine tuned Wave2vec2 checkpoints")
     parser.add_argument("--checkpoint_interval", type=int, default=1, help="Interval of epochs between saving model weights")
     parser.add_argument("--evaluation_interval", type=int, default=1, help="Interval of epochs between evaluations on validation set")
     parser.add_argument("--multiscale_training", action="store_true", help="Allow multi-scale training")
@@ -90,58 +93,25 @@ def run():
 
     # Get data configuration
     data_config = parse_data_config(args.data)
-    train_path = data_config["train"]
-    valid_path = data_config["valid"]
+    
+    image_dir = data_config["image_dir"]
+    annotation_dir = data_config["annotation_dir"]
+    audio_dir = data_config["audio_dir"]
+    train_data = data_config["train"]
+    valid_data = data_config["valid"]
     class_names = load_classes(data_config["names"])
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = 'cpu'
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = 'cpu'
 
     # ############
     # Create model
     # ############
 
+    #wave2_vec_path = '/workspace/omkar_projects/PyTorch-YOLOv3/new_ckpt_w2v'
+    processor = Wav2Vec2Processor.from_pretrained(args.audio)
+    model = load_model(args.model,args.audio,args.image).to(device)
     
-    wave2_vec_path = '/workspace/omkar_projects/PyTorch-YOLOv3/new_ckpt_w2v'
-    
-    model = load_model(args.model,wave2_vec_path,args.pretrained_weights).to(device)
-    
-    audio, sr = librosa.load('/workspace/omkar_projects/PyTorch-YOLOv3/00000da4b2da194ac31f6d1466d2ceb4823bdc263efa81004ee89464.wav', sr=16000)
-    processor = Wav2Vec2Processor.from_pretrained(wave2_vec_path)
-    # tokenizer = Wav2Vec2Tokenizer.from_pretrained(wave2_vec_path)
-    input_audio = processor(audio, return_tensors="pt", padding="longest").input_values
-    # print(model)
-    # out = model(torch.randn(1, 3, 640, 640).to(device), input_audio.to(device))
-    # for i in out:
-    #     print(i)
-    # import sys
-    # sys.exit(0)
-
-    # model = model.to(device)
-    # sys.exit(0)
-
-    # # for name,_ in model.named_parameters():
-    # #     print(name)
-    # # import sys
-    # # sys.exit(0)
-
-    # output_onnx = 'Stacked_encoder_multimodal.onnx'
-    # print("==> Exporting model to ONNX format at '{}'".format(output_onnx))
-    # input_names = ["image_input", "audio_input"]
-    # output_names = ["Bounding_boxes"]
-    # input_1 = torch.randn(1, 3, 640, 640).to(device)
-    
-    # # dynamic_axes = {"image_input":[0], "audio_input":[0],
-    # #                 "Bounding_boxes": [0],"Image_embedding":[0],}
-
-    # # pytorch_export_contrib_ops.register()
-    # torch.onnx.export(model, (input_1, input_audio), output_onnx, export_params=True, verbose=False,
-    #                             input_names=input_names, output_names=output_names, do_constant_folding=True, 
-    #                             opset_version=13)#, dynamic_axes=dynamic_axes)
-
-    # sys.exit(0)
-
-    # Print model
-
     hyperparams = parse_model_config(args.model).pop(0)
     hyperparams.update({
         'batch': int(hyperparams['batch']),
@@ -161,37 +131,44 @@ def run():
     })
 
 
-    if args.verbose:
-        summary(model, input_size=[(3, hyperparams['height'], hyperparams['height']), (109712)], device='cpu')
-    sys.exit(0)
+    # if args.verbose:
+    #     summary(model, input_size=[(3, hyperparams['height'], hyperparams['height']), (109712)], device='cpu')
 
     mini_batch_size = hyperparams['batch'] // hyperparams['subdivisions']
-
     # #################
     # Create Dataloader
     # #################
 
-    # Load training dataloader
+    #Load training dataloader
     dataloader = _create_data_loader(
-        train_path,
+        train_data,
+        image_dir,
+        annotation_dir,
+        audio_dir,
+        processor,
         mini_batch_size,
         hyperparams['height'],
         args.n_cpu,
         args.multiscale_training)
 
     # Load validation dataloader
-    validation_dataloader = _create_validation_data_loader(
-        valid_path,
+    validation_dataloader = _create_data_loader(
+        valid_data,
+        image_dir,
+        annotation_dir,
+        audio_dir,
+        processor,
         mini_batch_size,
         hyperparams['height'],
         args.n_cpu)
+
 
     # ################
     # Create optimizer
     # ################
 
     params = [p for p in model.parameters() if p.requires_grad]
-
+    
     if (hyperparams['optimizer'] in [None, "adam"]):
         optimizer = optim.Adam(
             params,
@@ -216,13 +193,13 @@ def run():
 
         model.train()  # Set model to training mode
 
-        for batch_i, (_, imgs, targets) in enumerate(tqdm.tqdm(dataloader, desc=f"Training Epoch {epoch}")):
+        for batch_i, (_, _, imgs, targets, audio_logits) in enumerate(tqdm.tqdm(dataloader, desc=f"Training Epoch {epoch}")):
             batches_done = len(dataloader) * epoch + batch_i
-
             imgs = imgs.to(device, non_blocking=True)
+            audio_logits = torch.stack(audio_logits).to(device, non_blocking=True).squeeze(1)
             targets = targets.to(device)
 
-            outputs = model(imgs)
+            outputs = model(imgs, audio_logits)
 
             loss, loss_components = compute_loss(outputs, targets, model)
 
@@ -315,7 +292,7 @@ def run():
                     ("validation/mAP", AP.mean()),
                     ("validation/f1", f1.mean())]
                 logger.list_of_scalars_summary(evaluation_metrics, epoch)
-
+        sys.exit(0)
 
 if __name__ == "__main__":
     run()

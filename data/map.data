@@ -1,0 +1,7 @@
+classes= 3
+image_dir = /workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/Images
+annotation_dir = /workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/Annotations
+audio_dir = /workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/Audio
+train=/workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/train.csv
+valid=/workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/valid.csv
+names=/workspace/omkar_projects/PyTorch-YOLOv3/data/Final_data/classes.names

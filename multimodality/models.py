@@ -202,7 +202,6 @@ class Darknet(nn.Module):
 
     def load_darknet_weights(self, weights_path):
         """Parses and loads the weights stored in 'weights_path'"""
-
         # Open the weights file
         with open(weights_path, "rb") as f:
             # First five are header values
@@ -429,7 +428,7 @@ class MODEL(nn.Module):
     def __init__(self,darknet,wave2vec,module_defs,vocab_size=32):
         super().__init__()
         self.vocab_size = vocab_size
-
+        self.seen = 0
         self.w2v2 = wave2vec
         for param in self.w2v2.parameters():
             param.requires_grad = False
@@ -440,7 +439,8 @@ class MODEL(nn.Module):
         self.layers = dict(darknet.named_modules())
         self.module_defs = module_defs[1:]
         self.module_list = nn.ModuleList(self.layers[i] for i in self.layers.keys() if len(i.split('.'))==2)
-
+        self.yolo_layers = [layer[0]
+                            for layer in self.module_list if isinstance(layer[0], YOLOLayer)]
     def forward(self, x, audio):
         img_size = x.size(2)
         #####
@@ -474,15 +474,11 @@ class MODEL(nn.Module):
                 x = module[0](x, img_size)
                 yolo_outputs.append(x)
             layer_outputs.append(x)
-        # for idx,i in enumerate(layer_outputs):
-        #     print(idx,i.shape)
         return yolo_outputs if self.training else torch.cat(yolo_outputs, 1)
 
 def load_model(config_path,wave2_vec_path,weights_path=None):
     model_wav2vec = Wav2Vec2ForCTC.from_pretrained(wave2_vec_path)
-    model = MODEL(load_weights(config_path,weights_path=None),model_wav2vec,parse_model_config(config_path),33)
-
-    # model = load_weights(config_path,weights_path=weights_path).to('cpu')
+    model = MODEL(load_weights(config_path,weights_path),model_wav2vec,parse_model_config(config_path),33)
 
     return model
 

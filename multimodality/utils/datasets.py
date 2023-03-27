@@ -5,7 +5,9 @@ import glob
 import random
 import os
 import warnings
+import librosa
 import numpy as np
+import pandas as pd
 from PIL import Image
 from PIL import ImageFile
 
@@ -56,19 +58,15 @@ class ImageFolder(Dataset):
 
 
 class ListDataset(Dataset):
-    def __init__(self, list_path, img_size=416, multiscale=True, transform=None):
-        with open(list_path, "r") as file:
-            self.img_files = file.readlines()
-
-        self.label_files = []
-        for path in self.img_files:
-            image_dir = os.path.dirname(path)
-            label_dir = "labels".join(image_dir.rsplit("images", 1))
-            assert label_dir != image_dir, \
-                f"Image path must contain a folder named 'images'! \n'{image_dir}'"
-            label_file = os.path.join(label_dir, os.path.basename(path))
-            label_file = os.path.splitext(label_file)[0] + '.txt'
-            self.label_files.append(label_file)
+    def __init__(self, data_frame, image_dir,
+                annotation_dir, audio_dir, processor,
+                img_size=640, multiscale=True, transform=None):
+ 
+        self.data_frame = pd.read_csv(data_frame)
+        self.image_dir = image_dir
+        self.annotation_dir = annotation_dir
+        self.audio_dir = audio_dir
+        self.processor = processor
 
         self.img_size = img_size
         self.max_objects = 100
@@ -83,10 +81,10 @@ class ListDataset(Dataset):
         # ---------
         #  Image
         # ---------
+        
+        img_path = os.path.join(self.image_dir,self.data_frame.iloc[index].Images)
+            # img_path = self.img_files[index % len(self.img_files)].rstrip()
         try:
-
-            img_path = self.img_files[index % len(self.img_files)].rstrip()
-
             img = np.array(Image.open(img_path).convert('RGB'), dtype=np.uint8)
         except Exception:
             print(f"Could not read image '{img_path}'.")
@@ -95,13 +93,14 @@ class ListDataset(Dataset):
         # ---------
         #  Label
         # ---------
+        
+        label_path = os.path.join(self.annotation_dir,self.data_frame.iloc[index].Annotations)
+            # label_path = self.label_files[index % len(self.img_files)].rstrip()
         try:
-            label_path = self.label_files[index % len(self.img_files)].rstrip()
-
             # Ignore warning if file is empty
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                boxes = np.loadtxt(label_path).reshape(-1, 5)
+                bb_targets = np.loadtxt(label_path).reshape(-1, 5)
         except Exception:
             print(f"Could not read label '{label_path}'.")
             return
@@ -111,12 +110,28 @@ class ListDataset(Dataset):
         # -----------
         if self.transform:
             try:
-                img, bb_targets = self.transform((img, boxes))
+                img, bb_targets = self.transform((img, bb_targets))
             except Exception:
                 print("Could not apply transform.")
                 return
+            
+        # ---------
+        #  Audio
+        # ---------
+        
+        audio_path = os.path.join(self.audio_dir,self.data_frame.iloc[index].array_path)
+            # audio_path = self.audio_files[index % len(self.img_files)].rstrip()
+        try:
+            # Ignore warning if file is empty
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                audio = np.load(audio_path)
+                audio_logits = self.processor(audio,return_tensors ='pt',padding='longest',sampling_rate=22050).input_values.squeeze(0)
+        except Exception:
+            print(f"Could not read audio '{audio_path}'.")
+            return
 
-        return img_path, img, bb_targets
+        return img_path, audio_path, img, bb_targets, audio_logits
 
     def collate_fn(self, batch):
         self.batch_count += 1
@@ -124,7 +139,7 @@ class ListDataset(Dataset):
         # Drop invalid images
         batch = [data for data in batch if data is not None]
 
-        paths, imgs, bb_targets = list(zip(*batch))
+        image_paths, audio_paths, imgs, bb_targets, audio_logits = list(zip(*batch))
 
         # Selects new image size every tenth batch
         if self.multiscale and self.batch_count % 10 == 0:
@@ -139,7 +154,7 @@ class ListDataset(Dataset):
             boxes[:, 0] = i
         bb_targets = torch.cat(bb_targets, 0)
 
-        return paths, imgs, bb_targets
+        return image_paths, audio_paths, imgs, bb_targets, audio_logits
 
     def __len__(self):
-        return len(self.img_files)
+        return len(self.data_frame)

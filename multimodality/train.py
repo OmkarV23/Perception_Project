@@ -131,8 +131,8 @@ def run():
     })
 
 
-    # if args.verbose:
-    #     summary(model, input_size=[(3, hyperparams['height'], hyperparams['height']), (109712)], device='cpu')
+    if args.verbose:
+        summary(model, input_size=[(3, hyperparams['height'], hyperparams['height']), (109712)], device='cpu')
 
     mini_batch_size = hyperparams['batch'] // hyperparams['subdivisions']
     # #################

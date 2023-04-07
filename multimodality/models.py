@@ -388,6 +388,20 @@ class Transformer_encoder(nn.Module):
                                     'Add_Norm_FFN': Normalized_Residual(embedding_size, dropout)})
 
     def forward(self, image_embeddings, wave2vec_embeddings):        
+#         attr_mapping = {'query':wave2vec_embeddings,'key':image_embeddings,'value':image_embeddings}
+#         for i in range(self.stacked_layers):
+#             qkv = []
+#             for k,v in attr_mapping.items():
+#                 qkv.append(self.module_dict[k](v))
+#             attention_residual_norm = self.module_dict['Add_Norm_attention'](qkv[0], 
+#                                                         self.module_dict['MultiHeadAttention_block'](*qkv)[0])
+#             x = self.module_dict['Add_Norm_FFN'](attention_residual_norm,
+#                                                 self.module_dict['Position-Wise-Feed-Forward'](attention_residual_norm))
+#             for attributs in attr_mapping.keys():
+#                 attr_mapping[attributs] = x
+#         grid_dim = int(math.sqrt(x.shape[1]))
+#         return x.reshape([x.shape[0], x.shape[2], grid_dim, grid_dim])
+
         attr_mapping = {'query':wave2vec_embeddings,'key':image_embeddings,'value':image_embeddings}
         for i in range(self.stacked_layers):
             qkv = []
@@ -397,10 +411,21 @@ class Transformer_encoder(nn.Module):
                                                         self.module_dict['MultiHeadAttention_block'](*qkv)[0])
             x = self.module_dict['Add_Norm_FFN'](attention_residual_norm,
                                                 self.module_dict['Position-Wise-Feed-Forward'](attention_residual_norm))
+            
+            '''changed from cross attention -> self attention -> self attention -> self attention to
+                            4X cross attention'''
+            
             for attributs in attr_mapping.keys():
-                attr_mapping[attributs] = x
+                if attributs=='query':
+                  if i%2==0:
+                    attr_mapping[attributs] = image_embeddings
+                  else:
+                    attr_mapping[attributs] = wave2vec_embeddings
+                else:
+                  attr_mapping[attributs] = x
         grid_dim = int(math.sqrt(x.shape[1]))
         return x.reshape([x.shape[0], x.shape[2], grid_dim, grid_dim])
+
 
 class Attention_merge(nn.Module):
     def __init__(self, vocab_size=32):

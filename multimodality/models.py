@@ -324,7 +324,8 @@ def load_weights(model_path, weights_path=None):
     return model
 
 ##############################################################################################################
-
+'''Hook module to get from the shape from (bs, 256, 80, 80) to (bs, vovab_size, 40, 40) -> (bs, 1600, vocab_size)
+    This is because the Wave2vec embeddings are padded to the sequence length of 1600 across the vocab size of 33/32 for english language''''
 class Hook(nn.Module):
     def __init__(self, vocab_size, encoder_layers) -> None:
         super().__init__()
@@ -351,7 +352,7 @@ class Hook(nn.Module):
                                                 image_embeddings.shape[3]]), audio_embeddings)
         return image_attention
 
-
+'''Normalized residual block from transformer'''
 class Normalized_Residual(nn.Module):
     def __init__(self, vocab_size, dropout=0.1):
         super().__init__()
@@ -361,7 +362,7 @@ class Normalized_Residual(nn.Module):
     def forward(self,jump,ff):
         return self.layer_norm(jump + self.dropout(ff))
 
-# Position-Wise-Feed-Forward Network
+'''Position-Wise-Feed-Forward Network'''
 class PWFFN(nn.Module):
     def __init__(self, vocab_size, dropout=0.1):
         super().__init__()
@@ -374,6 +375,7 @@ class PWFFN(nn.Module):
         x = self.fc_2(x)       
         return x
 
+'''Transformer style encoder to merge image and audio embeddings'''
 class Transformer_encoder(nn.Module):
     def __init__(self, stacked_layers, embedding_size=32, num_heads=3, dropout=0.1):
         super().__init__()
@@ -426,7 +428,7 @@ class Transformer_encoder(nn.Module):
         grid_dim = int(math.sqrt(x.shape[1]))
         return x.reshape([x.shape[0], x.shape[2], grid_dim, grid_dim])
 
-
+'''module to get merged modalities back to the same shape expected by the 36th feature map (bs, 256, 80, 80)'''
 class Attention_merge(nn.Module):
     def __init__(self, vocab_size=32):
         super().__init__()
@@ -491,7 +493,8 @@ class MODEL(nn.Module):
                 x = combined_outputs[:, group_size * group_id : group_size * (group_id + 1)] # Slice groupings used by yolo v4
             elif module_def["type"] == "shortcut":
                 layer_i = int(module_def["from"])
-                x = layer_outputs[-1] + layer_outputs[layer_i]
+                x = layer_outputs[-1] + layer_outputs[layer_i]                
+                ##### used the 36th feature map to create hook for the cross attention as this is the point were the yolo heads are created
                 if i==36:
                     x = self.hook_attention(x, audio_logits)
                     x = self.attention_merge(x)

@@ -16,5 +16,3 @@ Run single pass as:
 
 `python3 python3 train.py --data /workspace/omkar_projects/PyTorch-YOLOv3/config/custom.data --pretrained_weights ../weights/darknet53.conv.74`
 
-
-# Let's do itttttttttttttttttttttttttttttttttttttttttt. :money_mouth_face:

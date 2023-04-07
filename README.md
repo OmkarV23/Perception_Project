@@ -2,8 +2,7 @@
 
 ## :ear: + :eyes: using :hugs:
 
-Added SRGAN script to rescale image 4X. Haven't added the bounding box scaling logic yet. Add it, I am working.
-If facing any issue, feel free to ask me.
+Added SRGAN script to rescale image 4X.
 
 Download weights darknet53 from weights/download_weights.sh
 comment yolov3 and yolov3-tiny weights before downloading, if not commented.

@@ -1,4 +1,4 @@
-from utils.utils import rescale_boxes, non_max_suppression
+from multimodality.utils.utils import rescale_boxes, non_max_suppression
 import torch
 import numpy as np
 
